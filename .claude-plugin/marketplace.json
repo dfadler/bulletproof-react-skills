@@ -1,0 +1,24 @@
+{
+  "name": "bulletproof-react-skills",
+  "owner": {
+    "name": "Dustin Fadler",
+    "url": "https://github.com/dfadler"
+  },
+  "description": "React project-convention skills distilled from bulletproof-react's docs (MIT), as an installable Claude Code plugin.",
+  "plugins": [
+    {
+      "name": "bulletproof-react-skills",
+      "source": "./",
+      "description": "React project conventions distilled from bulletproof-react's docs/*.md (MIT): project structure, state and data fetching, testing, performance, security, components and styling, and project standards.",
+      "category": "engineering",
+      "keywords": [
+        "react",
+        "project-structure",
+        "testing",
+        "performance",
+        "security",
+        "components"
+      ]
+    }
+  ]
+}
