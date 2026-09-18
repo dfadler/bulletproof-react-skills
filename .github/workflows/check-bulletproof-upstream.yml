@@ -1,0 +1,133 @@
+name: Check bulletproof-react upstream drift
+
+# Signals when alan2207/bulletproof-react has advanced past the commit this
+# plugin is pinned to (see NOTICE.md and .docs-manifest.json's `pinnedSha`).
+# That upstream repo has no releases/tags, so there's no semver signal to
+# watch — this workflow polls its HEAD SHA directly. It only opens an issue;
+# it never updates the pin itself, keeping the human review step in
+# NOTICE.md's "Updating" procedure intact.
+
+on:
+  schedule:
+    # Weekly: bulletproof-react isn't high-churn, so daily polling would
+    # mostly just spend Actions minutes checking nothing changed. Bump to a
+    # daily cron here if faster signal is ever worth it.
+    - cron: "0 6 * * 1" # Monday 06:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  check-drift:
+    runs-on: ubuntu-latest
+    permissions:
+      # Re-declared alongside issues:write: a job-level permissions block
+      # replaces the top-level one entirely rather than adding to it, and
+      # actions/checkout below needs contents:read.
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Compare pinned SHA against upstream HEAD
+        id: compare
+        run: |
+          set -euo pipefail
+
+          pinned_sha=$(jq -r '.pinnedSha' .docs-manifest.json)
+          if [ -z "$pinned_sha" ] || [ "$pinned_sha" = "null" ]; then
+            echo "::error::Could not read .pinnedSha from .docs-manifest.json"
+            exit 1
+          fi
+
+          upstream_sha=$(git ls-remote https://github.com/alan2207/bulletproof-react.git HEAD | cut -f1)
+          if [ -z "$upstream_sha" ]; then
+            echo "::error::Could not resolve alan2207/bulletproof-react HEAD via git ls-remote"
+            exit 1
+          fi
+
+          echo "Pinned:   $pinned_sha"
+          echo "Upstream: $upstream_sha"
+
+          {
+            echo "pinned_sha=$pinned_sha"
+            echo "upstream_sha=$upstream_sha"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "$pinned_sha" = "$upstream_sha" ]; then
+            echo "up_to_date=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "up_to_date=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Ensure drift label exists
+        if: steps.compare.outputs.up_to_date == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh label create "upstream-drift" \
+            --repo "${{ github.repository }}" \
+            --color "fbca04" \
+            --description "alan2207/bulletproof-react has advanced past the pinned commit" \
+            2>/dev/null || true
+
+      - name: Skip if a drift issue is already open
+        id: dedup
+        if: steps.compare.outputs.up_to_date == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          existing=$(gh issue list \
+            --repo "${{ github.repository }}" \
+            --label "upstream-drift" \
+            --state open \
+            --json number \
+            --jq "length")
+          echo "existing_count=$existing" >> "$GITHUB_OUTPUT"
+
+      - name: Open drift issue
+        if: steps.compare.outputs.up_to_date == 'false' && steps.dedup.outputs.existing_count == '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PINNED_SHA: ${{ steps.compare.outputs.pinned_sha }}
+          UPSTREAM_SHA: ${{ steps.compare.outputs.upstream_sha }}
+        run: |
+          set -euo pipefail
+
+          diff_url="https://github.com/alan2207/bulletproof-react/compare/${PINNED_SHA}...${UPSTREAM_SHA}"
+          notice_url="https://github.com/${{ github.repository }}/blob/main/NOTICE.md#updating"
+
+          body="$(cat <<EOF
+          Upstream [\`alan2207/bulletproof-react\`](https://github.com/alan2207/bulletproof-react) has advanced past the commit this plugin is pinned to.
+
+          - Pinned SHA: \`${PINNED_SHA}\`
+          - Upstream HEAD: \`${UPSTREAM_SHA}\`
+          - Diff: ${diff_url}
+
+          ## Update procedure
+
+          Follow the "Updating" steps in [\`NOTICE.md\`](${notice_url}).
+
+          Before running the polish step, check whether the doc-set **shape** changed
+          (a file added, removed, or renamed) — \`generate.js\` refuses to silently
+          regenerate around a shape change, so that check needs to happen first rather
+          than surfacing mid-run as a refusal.
+
+          This workflow only signals that an update is needed; it does not update the
+          pin itself. Close this issue once the pin is bumped (or once you've confirmed
+          no update is needed yet).
+
+          ---
+          Opened automatically by \`.github/workflows/check-bulletproof-upstream.yml\`.
+          EOF
+          )"
+
+          gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "bulletproof-react upstream drift: new commit available (${UPSTREAM_SHA:0:7})" \
+            --label "upstream-drift" \
+            --body "$body"
